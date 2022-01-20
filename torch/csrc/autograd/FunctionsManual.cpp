@@ -4958,6 +4958,70 @@ std::tuple<Tensor, Tensor> _cudnn_convolution_backward(
   return result;
 }
 
+std::tuple<Tensor, Tensor> scatter_reduce_backward(const Tensor & grad,
+                                                   const Tensor& input,
+                                                   int dim,
+                                                   const Tensor & index,
+                                                   c10::string_view reduce,
+                                                   const c10::optional<Tensor>& optional_out,
+                                                   const Tensor & result){
+  Tensor grad_input, grad_optional_out;
+  if (!grad.defined()) {
+    return std::make_tuple(grad_input, grad_optional_out);
+  }
+
+  auto out_has_value = isDefined(optional_out);
+  Tensor optional_out_val;
+  if (out_has_value){
+    optional_out_val = optional_out.value();
+  }
+
+  // TODO: gather doesn't support broadcasting of input and index
+  // currently this works because scatter_reduce doesn't support broadcasting yet but
+  // this needs to be fixed when scatter_reduce is upgraded to support broadcasting
+  // by broadcasting index here too.
+
+  if (reduce == "sum") {
+    grad_input = grad.gather(dim, index);
+
+    if (out_has_value){
+      grad_optional_out = grad;
+    }
+  } else if (reduce == "prod") {
+    grad_input = (grad * result).gather(dim, index) / input;
+    // handle nans in above computation when input = 0, we know result = 0 (0 / 0 -> nan)
+    // so just replace with 0
+    grad_input.masked_fill_(input == 0, 0);
+
+    if (out_has_value) {
+      grad_optional_out = (grad * result) / optional_out_val;
+      grad_optional_out.masked_fill_(optional_out_val == 0, 0);
+    }
+  } else if (reduce == "mean") {
+    Tensor N = out_has_value ? ones_like(grad) : zeros_like(grad);
+    N.scatter_add_(dim, index, ones_like(input));
+    Tensor N_input = N.gather(dim, index);
+    grad_input = grad.gather(dim, index) / N_input;
+    grad_input.masked_fill_(N_input == 0, 0); // move to else branch?
+
+    if (out_has_value) {
+      grad_optional_out = grad / N;
+    }
+  } else if (reduce == "amax" || reduce == "amin") {
+    Tensor value = result.gather(dim, index);
+    grad_input = (input == value) * grad.gather(dim, index);
+    if (out_has_value) {
+      grad_optional_out = (optional_out_val == result) * grad;
+    }
+  } else {
+    AT_ERROR("Expected 'reduce' to be one of 'sum', 'prod', 'mean', 'amax', 'amin' but got ", reduce, ".");
+  }
+
+  return std::make_tuple(grad_input, grad_optional_out);
+
+}
+
+
 } // namespace details
 } // namespace generated
 } // namespace autograd
