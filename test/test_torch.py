@@ -258,6 +258,7 @@ class AbstractTestCases:
                            'prelu',
                            'resize',
                            'resize_as',
+                           'scatter_reduce',
                            'softmax',
                            'split_with_sizes',
                            'unsafe_split_with_sizes',
@@ -1281,11 +1282,15 @@ class AbstractTestCases:
             input = torch.randn(shape, dtype=dtype, device=device)
 
             for dim in range(len(shape)):
-                output = input._scatter_reduce(dim, index, "sum", output_size=output_size)
+                output = input.scatter_reduce(dim, index, "sum", output_size=output_size)
 
                 output_shape = copy.copy(shape)
                 output_shape[dim] = output_size
                 self.assertEqual(output.shape, output_shape)
+
+                optional_out = torch.randn(output_shape, dtype=dtype, device=device)
+                expected_optional = optional_out.clone()
+                input.scatter_reduce(dim, index, "sum", output_size=output_size, optional_out=optional_out)
 
                 expected = torch.zeros(output_shape, dtype=dtype, device=device)
                 for i, j, k in itertools.product(range(shape[0]), range(shape[1]), range(shape[2])):
@@ -1300,26 +1305,27 @@ class AbstractTestCases:
                         k = m
 
                     expected[i, j, k] += v
+                    expected_optional[i, j, k] += v
+
 
                 self.assertTrue(torch.allclose(output, expected))
+                self.assertTrue(torch.allclose(optional_out, expected_optional))
 
-                torch._scatter_reduce(input, dim, index, "sum", out=output)
-                self.assertTrue(torch.allclose(output, expected))
 
             with self.assertRaisesRegex(RuntimeError, "Expected `dim` to be in range -3 to 2"):
-                torch._scatter_reduce(input, 4, index, "sum")
+                torch.scatter_reduce(input, 4, index, "sum")
 
             with self.assertRaisesRegex(RuntimeError, "Shape mismatch"):
                 index2 = torch.randint(0, output_size, (10, ), dtype=torch.long, device=device)
-                torch._scatter_reduce(input, 0, index2, "sum")
+                torch.scatter_reduce(input, 0, index2, "sum")
 
             with self.assertRaisesRegex(RuntimeError, "`reduce` argument must be 'sum'"):
-                torch._scatter_reduce(input, 2, index, "mean")
+                torch.scatter_reduce(input, 2, index, "mean")
 
             with self.assertRaisesRegex(RuntimeError, "Expected `index` values to be in range 0 to 2"):
                 input2 = torch.randn(10, dtype=dtype, device=device)
                 index2 = torch.tensor([0, 1, 0, 1, 2, 3, 3, 4, 4, 3])
-                torch._scatter_reduce(input2, 0, index2, "sum", output_size=2)
+                torch.scatter_reduce(input2, 0, index2, "sum", output_size=2)
 
         def test_structseq_repr(self):
             a = torch.arange(250).reshape(5, 5, 10)
